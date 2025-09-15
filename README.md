@@ -29,6 +29,7 @@ hateval-trainer/
 │
 └── tests/                  # Pytest-based unit tests
     └── test_smoke.py       # Minimal smoke test
+```
 
 ## Features
 - Text preprocessing: lowercasing, punctuation stripping, Spanish stopwords, basic lemmatization.
