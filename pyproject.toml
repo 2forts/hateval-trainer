@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "hateval-trainer"
+version = "0.1.0"
+description = "HatEval ES text classification trainer (classic GRU + optional hybrid quantum layer)"
+readme = "README.md"
+authors = [{ name = "Your Name" }]
+requires-python = ">=3.10"
+dependencies = [
+"tensorflow>=2.12",
+"keras>=2.12",
+"numpy",
+"pandas",
+"scikit-learn",
+"nltk",
+"matplotlib",
+"seaborn",
+# Optional, only needed if --hybrid
+"pennylane; extra == 'quantum'",
+]
+
+
+[project.optional-dependencies]
+quantum = ["pennylane"]
+
+
+[project.scripts]
+hateval-train = "hateval_trainer.cli:main"
+
+
+[tool.black]
+line-length = 100
+
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I"]
