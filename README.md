@@ -2,27 +2,32 @@
 
 A clean, reproducible training pipeline for Spanish datasets, featuring a classic Bidirectional GRU baseline and an hybrid quantum head powered by PennyLane.
 
+## Repository Structure
+
 hateval-trainer/
-├─ LICENSE
-├─ README.md
-├─ .gitignore
-├─ pyproject.toml
-├─ requirements.txt
-├─ Makefile
-├─ .pre-commit-config.yaml
-├─ scripts/
-│   ├─ download_nltk.py
-│   └─ examples.sh
-├─ src/
-│   └─ hateval_trainer/
-│   ├─ __init__.py
-│   ├─ config.py
-│   ├─ data.py
-│   ├─ models.py
-│   ├─ train.py
-│   └─ cli.py
-└─ tests/
-    └─ test_smoke.py
+├── LICENSE
+├── README.md
+├── .gitignore
+├── pyproject.toml # Project metadata & dependencies
+├── requirements.txt # Runtime dependencies
+├── Makefile # Handy shortcuts (train, lint, test…)
+├── .pre-commit-config.yaml # Code quality hooks
+│
+├── scripts/ # Utility scripts
+│ ├── download_nltk.py # Pre-download NLTK resources
+│ └── examples.sh # Example training commands
+│
+├── src/
+│ └── hateval_trainer/ # Main package
+│ ├── init.py
+│ ├── config.py # Config dataclass
+│ ├── data.py # Data loading & preprocessing
+│ ├── models.py # GRU & hybrid quantum models
+│ ├── train.py # Training & evaluation loop
+│ └── cli.py # Command-line interface (hateval-train)
+│
+└── tests/ # Pytest-based unit tests
+└── test_smoke.py # Minimal smoke test
 
 ## Features
 - Text preprocessing: lowercasing, punctuation stripping, Spanish stopwords, basic lemmatization.
