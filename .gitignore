@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+.env
+.env.*
+
+
+# Jupyter
+.ipynb_checkpoints/
+
+
+# Data / outputs
+salidas/
+*.keras
+*.h5
+*.png
+*.csv
