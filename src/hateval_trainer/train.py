@@ -43,3 +43,49 @@ def train_and_evaluate(model, X_test, y_test, train_ds, test_ds, cfg: Config):
     plt.savefig(fig_path)
     plt.close()
     print(f"Saved confusion matrix to: {fig_path}")
+
+def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, cfg: Config):
+    """Train the hybrid model in eager mode with a custom loop."""
+    import tensorflow as tf
+    import numpy as np
+    from sklearn.metrics import classification_report
+
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    optimizer = tf.keras.optimizers.Adam()
+
+    @tf.function(experimental_relax_shapes=True)
+    def train_step(xb, yb):
+        with tf.GradientTape() as tape:
+            logits = forward(xb)
+            loss = loss_fn(yb, logits)
+        grads = tape.gradient(loss, trainables)
+        optimizer.apply_gradients(zip(grads, trainables))
+        return loss
+
+    @tf.function(experimental_relax_shapes=True)
+    def predict_step(xb):
+        return forward(xb)
+
+    for epoch in range(cfg.epochs):
+        # Train
+        total_loss = 0.0
+        batches = 0
+        for xb, yb in train_ds:
+            loss = train_step(xb, yb)
+            total_loss += loss
+            batches += 1
+        avg_loss = float(total_loss / max(batches, 1))
+        print(f"[HYBRID] Epoch {epoch+1}/{cfg.epochs} - loss: {avg_loss:.4f}")
+
+    # Evaluate
+    y_logits = []
+    y_true = []
+    for xb, yb in test_ds:
+        y_logits.append(predict_step(xb))
+        y_true.append(yb)
+    y_logits = tf.concat(y_logits, axis=0).numpy()
+    y_true = tf.concat(y_true, axis=0).numpy()
+    y_pred = np.argmax(y_logits, axis=1)
+
+    print("\n[HYBRID] Classification report:\n")
+    print(classification_report(y_true, y_pred, digits=3))
