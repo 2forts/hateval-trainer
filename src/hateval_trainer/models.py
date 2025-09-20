@@ -4,7 +4,6 @@ import tensorflow as tf
 from tensorflow.keras.layers import Input, Embedding, Bidirectional, GRU, Dropout, Dense, Lambda
 from tensorflow.keras.models import Model
 
-
 def build_gru_model(
     vectorizer: tf.keras.layers.Layer,
     vocab_size: int,
