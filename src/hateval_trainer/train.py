@@ -9,20 +9,19 @@ from sklearn.utils.class_weight import compute_class_weight
 
 from .config import Config
 
-
 def train_and_evaluate(model, X_test, y_test, train_ds, test_ds, cfg, fit_verbose=1, print_report=True):
-    """Entrena (con verbosidad configurable) y evalúa, devolviendo métricas e informe."""
+    """Train (with configurable verbosity) and evaluate, returning metrics and the text report."""
     import numpy as np
     import tensorflow as tf
     from sklearn.metrics import classification_report, confusion_matrix
 
-    # callbacks como tuvieses ya (early stopping, reduce LR, etc.)
+    # Standard callbacks (early stopping and LR scheduling)
     cbs = [
         tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2),
     ]
 
-    # entrenamiento con control de verbosidad
+    # Supervised training with verbosity control
     model.fit(
         train_ds,
         validation_data=test_ds,
@@ -31,7 +30,7 @@ def train_and_evaluate(model, X_test, y_test, train_ds, test_ds, cfg, fit_verbos
         verbose=fit_verbose,
     )
 
-    # evaluación
+    # Evaluation on the provided test split
     y_logits = model.predict(tf.convert_to_tensor(X_test), batch_size=cfg.batch_size, verbose=0)
     y_pred = np.argmax(y_logits, axis=1)
 
@@ -41,7 +40,7 @@ def train_and_evaluate(model, X_test, y_test, train_ds, test_ds, cfg, fit_verbos
     if print_report:
         print(report)
 
-    # Devuelve por si el caller quiere componer un resumen final
+    # Return everything the caller may want to assemble a final summary
     return {
         "report": report,
         "confusion_matrix": cm,
@@ -49,9 +48,8 @@ def train_and_evaluate(model, X_test, y_test, train_ds, test_ds, cfg, fit_verbos
         "y_logits": y_logits,
     }
 
-
 def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, cfg: Config):
-    """Train the hybrid model in eager mode with a custom loop."""
+    """Train the hybrid model in eager mode with a custom loop (minimal example)."""
     import tensorflow as tf
     import numpy as np
     from sklearn.metrics import classification_report
@@ -73,7 +71,7 @@ def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, c
         return forward(xb)
 
     for epoch in range(cfg.epochs):
-        # Train
+        # One full pass over the training dataset
         total_loss = 0.0
         batches = 0
         for xb, yb in train_ds:
@@ -83,7 +81,7 @@ def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, c
         avg_loss = float(total_loss / max(batches, 1))
         print(f"[HYBRID] Epoch {epoch+1}/{cfg.epochs} - loss: {avg_loss:.4f}")
 
-    # Evaluate
+    # Evaluation on the test dataset
     y_logits = []
     y_true = []
     for xb, yb in test_ds:
@@ -97,21 +95,23 @@ def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, c
     print(classification_report(y_true, y_pred, digits=3))
 
 
-# === Stratified k-fold CV con informes por pliegue (opcionalmente guardados) ===
+# === Stratified k-fold CV with per-fold reports (optionally saved) ===
 
 def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                    balance_train: bool = False):
     """
-    Stratified k-fold CV con dos modos:
-      - Modo clásico (por defecto): solo backbone GRU.
-      - Modo híbrido (cfg.cv_use_hybrid=True): ENTRENAMIENTO EN DOS FASES POR PLIEGUE:
-          Fase 1) entrenar backbone clásico end-to-end.
-          Fase 2) construir híbrido (backbone congelado) y entrenar solo la cabeza cuántica+densa.
-    También incluye:
-      - Class weights por pliegue (escalables con cfg.cw_scale, default=1.0).
-      - Umbral de decisión opcional por pliegue (binario) con cfg.tune_threshold.
-      - Guardado opcional de reports y matrices de confusión si cfg.cv_save_dir.
-      - Callbacks: EarlyStopping + ReduceLROnPlateau.
+    Stratified k-fold CV with two modes:
+
+      - Classical mode (default): train and evaluate the GRU backbone only.
+      - Hybrid mode (cfg.cv_use_hybrid=True): TWO-PHASE TRAINING PER FOLD
+          Phase 1) train the classical backbone end-to-end.
+          Phase 2) build the hybrid model (backbone is frozen) and train only the quantum+dense head.
+
+    Also includes:
+      - Per-fold class weights (scalable with cfg.cw_scale, default 1.0) — this is NOT resampling.
+      - Optional per-fold decision-threshold tuning for binary tasks (cfg.tune_threshold).
+      - Optional saving of text reports and confusion matrices if cfg.cv_save_dir is set.
+      - Standard callbacks: EarlyStopping + ReduceLROnPlateau.
     """
     import numpy as np
     import tensorflow as tf
@@ -122,13 +122,13 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
     from sklearn.utils import resample
     from sklearn.utils.class_weight import compute_class_weight
 
-    # Semillas
+    # Global seed for reproducibility (best-effort)
     try:
         tf.keras.utils.set_random_seed(getattr(cfg, "random_state", 42))
     except Exception:
         pass
 
-    # Opciones
+    # Options
     save_dir = getattr(cfg, "cv_save_dir", None)
     if save_dir is not None:
         save_dir = Path(save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
     fold = 1
 
     for tr, va in skf.split(X, y):
-        # Semilla por fold
+        # Per-fold seed (optional but useful for stability)
         try:
             tf.keras.utils.set_random_seed(getattr(cfg, "random_state", 42) + fold)
         except Exception:
@@ -157,7 +157,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         X_train, X_val = X[tr], X[va]
         y_train, y_val = y[tr], y[va]
 
-        # (Opcional) upsampling SOLO en train del fold
+        # (Optional) upsampling ONLY on the training portion of the fold
         if balance_train:
             classes_bt, counts = np.unique(y_train, return_counts=True)
             n_max = counts.max()
@@ -171,7 +171,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                 Xb.append(Xi_res); yb.append(yi_res)
             X_train = np.concatenate(Xb); y_train = np.concatenate(yb)
 
-        # Vectorizer SOLO con train del fold
+        # Vectorizer adapted ONLY on the training portion of the fold
         vectorizer = tf.keras.layers.TextVectorization(
             max_tokens=getattr(cfg, "vocab_size", 20000),
             output_sequence_length=getattr(cfg, "seq_len", 128),
@@ -190,20 +190,20 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
 
         num_classes = int(np.unique(y).size)
 
-        # === Pesos de clase por pliegue (NO es resampling; cumple "sin balancing") ===
+        # === Per-fold class weights (this is NOT resampling; it respects "no balancing") ===
         classes = np.unique(y_train)
         base_cw = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
-        # Escalamos la clase con mayor peso (minoritaria) para ajustar precisión/recobrado si se desea
+        # Scale the most underrepresented class (highest weight) if desired
         idx_max = int(np.argmax(base_cw))
         scaled_cw = base_cw.copy()
         scaled_cw[idx_max] = scaled_cw[idx_max] * cw_scale
         class_weights = {int(c): float(w) for c, w in zip(classes, scaled_cw)}
-        # ============================================================================
+        # ================================================================================
 
-        # ===== Builder del backbone e (opcional) híbrido en dos fases =====
+        # ===== Build and train backbone and (optionally) hybrid in two phases =====
         if model_builder_factory is None:
             from .models import build_gru_model, build_hybrid_model
-            # Fase 1: backbone clásico
+            # Phase 1: classical backbone
             classic = build_gru_model(
                 vectorizer=vectorizer,
                 vocab_size=getattr(cfg, "vocab_size", 20000),
@@ -211,14 +211,14 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                 num_classes=num_classes,
             )
 
-            # Callbacks compartidos
+            # Shared callbacks
             cbs = [
                 tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True),
                 tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2),
             ]
 
             if use_hybrid:
-                # --- ENTRENAR BACKBONE (fase 1) ---
+                # --- Train backbone (phase 1) ---
                 if getattr(cfg, "verbose", False):
                     print(f"[CV fold {fold}/{k}] Phase 1: training classical backbone ...")
                 classic.fit(
@@ -230,11 +230,11 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                     class_weight=class_weights,
                 )
 
-                # Construir híbrido congelando el extractor (build_hybrid_model debe encargarse de ello)
+                # Build the hybrid model by freezing the extractor (handled inside build_hybrid_model)
                 hybrid = build_hybrid_model(classic, num_classes)
 
-                # --- ENTRENAR CABEZA HÍBRIDA (fase 2) ---
-                # Respetamos hybrid_epochs si está definido
+                # --- Train hybrid head (phase 2) ---
+                # Respect hybrid-specific epochs if provided
                 epochs_backup = getattr(cfg, "epochs", 5)
                 hy_epochs = getattr(cfg, "hybrid_epochs", epochs_backup)
                 if getattr(cfg, "verbose", False):
@@ -247,9 +247,9 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                     verbose=1 if getattr(cfg, "verbose", False) else 0,
                     class_weight=class_weights,
                 )
-                model = hybrid  # evaluar con el híbrido
+                model = hybrid  # evaluate with the hybrid
             else:
-                # Solo backbone (modo clásico)
+                # Backbone-only (classical mode)
                 if getattr(cfg, "verbose", False):
                     print(f"[CV fold {fold}/{k}] Training classical backbone (no hybrid) ...")
                 classic.fit(
@@ -262,19 +262,19 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                 )
                 model = classic
         else:
-            # Si te pasan un factory externo, lo usamos tal cual (se asume que implementa la lógica de dos fases si procede)
+            # If an external factory is provided, we assume it encapsulates the two-phase logic if needed
             model = model_builder_factory(vectorizer, num_classes)()
-        # =================================================================
+        # ===========================================================================
 
-        # --- Predicción en validación ---
+        # --- Inference on validation ---
         y_logits = []
         for xb, _ in val_ds:
             y_logits.append(model(xb, training=False))
         y_logits = tf.concat(y_logits, axis=0).numpy()
 
-        # Decisión: umbral optativo para binario
+        # Decision rule: optional threshold tuning for binary tasks
         if num_classes == 2:
-            # Softmax estable -> prob de clase 1 (HS)
+            # Numerically stable softmax → probability of class 1 (HS)
             z = y_logits - y_logits.max(axis=1, keepdims=True)
             expz = np.exp(z)
             p1 = expz[:, 1] / expz.sum(axis=1, keepdims=True)[:, 0]
@@ -292,7 +292,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         else:
             y_pred = np.argmax(y_logits, axis=1)
 
-        # Métricas del fold
+        # Per-fold metrics
         acc = accuracy_score(y_val, y_pred)
         macro_f1 = f1_score(y_val, y_pred, average="macro")
         accs.append(acc); f1s.append(macro_f1)
@@ -310,7 +310,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         if save_dir is not None:
             (save_dir / f"fold_{fold:02d}_report.txt").write_text(rep)
             cm = confusion_matrix(y_val, y_pred)
-            fig = _cm_figure(cm, label_names)  # asegúrate de tener esta utilidad en train.py
+            fig = _cm_figure(cm, label_names)  # ensure this utility exists in train.py
             fig.savefig(save_dir / f"fold_{fold:02d}_cm.png", dpi=150, bbox_inches="tight")
             import matplotlib.pyplot as plt; plt.close(fig)
 
@@ -339,7 +339,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
     }
 
 def _cm_figure(cm: np.ndarray, labels: list | None):
-    """Devuelve una figura de matplotlib con la matriz de confusión."""
+    """Return a matplotlib Figure with the confusion matrix annotated."""
     import numpy as np
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
