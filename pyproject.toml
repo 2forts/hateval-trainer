@@ -7,12 +7,12 @@ name = "hateval-trainer"
 version = "0.1.0"
 description = "HatEval ES text classification trainer (BiGRU backbone + optional hybrid quantum head)"
 readme = "README.md"
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Francisco Orts" }]
 requires-python = ">=3.10"
-# Nota: evitamos fijar 'keras' explícito para no romper compatibilidad con la versión incluida en TF.
+# Note: we avoid explicitly setting ‘keras’ so as not to break compatibility with the version included in TF.
 dependencies = [
-  "tensorflow>=2.9,<2.16",      # rango amplio y estable; ajusta si tu entorno requiere otro
-  "numpy>=1.23,<2.0",           # TF<2.16 no soporta numpy 2.x
+  "tensorflow==2.17",      
+  "numpy>=1.23,<2.0",         
   "pandas>=1.4",
   "scikit-learn>=1.1",
   "nltk>=3.7",
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Instala con: pip install ".[quantum]"
+# Install with: pip install ".[quantum]"
 quantum = [
   "pennylane>=0.34"
 ]
