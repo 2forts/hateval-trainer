@@ -11,7 +11,7 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.utils import resample
 
-# NLTK para stopwords en español (ligero y fácil de instalar)
+# NLTK for Spanish stopwords (lightweight and easy to install)
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
@@ -19,21 +19,34 @@ from nltk.stem import WordNetLemmatizer
 from .config import Config
 
 
-# ---------- Carga y normalización de columnas ----------
+# ---------- Loading and column normalization ----------
 
 def load_dataset(csv_path: Path) -> pd.DataFrame:
     """
-    Carga CSV y normaliza a ('text','target').
-    - Autodetecta separador y encoding.
-    - Acepta alias comunes en inglés/español.
-    - Normaliza etiquetas a enteros 0..C-1.
+    Load a CSV and normalize column names to ('text', 'target').
+
+    Features:
+      - Tries multiple encodings and separators (robust to CSV variations).
+      - Accepts common English/Spanish aliases for text and label columns.
+      - Normalizes labels to integer codes in the range 0..C-1.
+
+    Parameters
+    ----------
+    csv_path : Path
+        Path to the CSV file.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with exactly two columns: 'text' (str) and 'target' (int).
     """
     import pandas as pd
 
+    # Try several (encoding, separator) combinations for robustness
     attempts = [
         ("utf-8", ";"),
         ("utf-8", ","),
-        ("utf-8", None),     # inferir
+        ("utf-8", None),     # infer separator (python engine)
         ("latin-1", ";"),
         ("latin-1", ","),
         ("latin-1", None),
@@ -51,10 +64,10 @@ def load_dataset(csv_path: Path) -> pd.DataFrame:
     if df is None:
         raise ValueError(f"Could not read CSV {csv_path}: {last_err}")
 
-    # normaliza nombres
+    # Normalize column names to lowercase, strip whitespace
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # alias de texto y etiqueta (EN + ES)
+    # Common aliases for the text and target columns (EN + ES)
     text_aliases = {
         "text", "tweet", "sentence", "content", "tweet_text",
         "mensaje", "texto", "comentario", "contenido"
@@ -73,24 +86,31 @@ def load_dataset(csv_path: Path) -> pd.DataFrame:
             f"Expected text in one of {sorted(text_aliases)} and label in {sorted(target_aliases)}."
         )
 
+    # Rename to canonical names
     df = df.rename(columns={text_col: "text", target_col: "target"}).copy()
 
-    # descarta columnas auxiliares comunes si aparecen
+    # Drop common auxiliary columns if present
     for col in ("id", "tr", "ag"):
         if col in df.columns:
             df = df.drop(columns=[col])
 
-    # normaliza etiquetas a 0..C-1 enteros
+    # Normalize labels to consecutive integer codes (0..C-1)
     df["target"] = pd.Categorical(df["target"]).codes.astype(int)
 
     return df[["text", "target"]]
 
-# ---------- Preprocesado de texto ----------
+
+# ---------- Text preprocessing ----------
 
 def _ensure_nltk(verbose: bool = False) -> tuple[set[str], WordNetLemmatizer]:
     """
-    Garantiza que los recursos de NLTK necesarios están disponibles y devuelve
-    stopwords españolas + lematizador.
+    Ensure required NLTK resources are available and return
+    Spanish stopwords + a lemmatizer.
+
+    Returns
+    -------
+    (set[str], WordNetLemmatizer)
+        Spanish stopwords and a WordNetLemmatizer instance.
     """
     try:
         nltk.data.find("corpora/stopwords")
@@ -108,9 +128,28 @@ def _ensure_nltk(verbose: bool = False) -> tuple[set[str], WordNetLemmatizer]:
 
 def clean_text(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
-    Normaliza texto: minúsculas, elimina URLs y puntuación, quita stopwords en español
-    y lematiza con WordNet (nota: lematiza mejor en inglés; para español óptimo,
-    considerar spaCy 'es_core_news_sm').
+    Normalize raw text with a simple, language-agnostic pipeline:
+      - Lowercase
+      - Remove URLs and punctuation
+      - Remove Spanish stopwords
+      - Lemmatize tokens with WordNet
+
+    Notes
+    -----
+    WordNet lemmatization is English-centered; for best Spanish lemmatization,
+    consider spaCy's 'es_core_news_sm' as a drop-in alternative.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with a 'text' column.
+    verbose : bool
+        If True, downloads NLTK resources verbosely.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of the input with normalized 'text'.
     """
     stop_words, lemmatizer = _ensure_nltk(verbose)
 
@@ -130,12 +169,27 @@ def clean_text(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     return out
 
 
-# ---------- Balanceo y datasets ----------
+# ---------- Class balancing and dataset builders ----------
 
 def balance_classes(df: pd.DataFrame, label: str = "target", seed: int = 42) -> pd.DataFrame:
     """
-    Upsampling con reemplazo hasta igualar la clase mayoritaria y barajado final.
-    ÚTIL solo como utilidad general; NO usar antes del split para evitar leakage.
+    Naive upsampling with replacement until all classes match the majority count,
+    then shuffle. Useful as a general utility, but DO NOT use it before the split
+    (train/test or cross-validation) to avoid data leakage.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe with a label column.
+    label : str
+        Name of the label column.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    pd.DataFrame
+        Balanced dataframe (upsampled).
     """
     parts = []
     max_count = df[label].value_counts().max()
@@ -153,18 +207,30 @@ def balance_classes(df: pd.DataFrame, label: str = "target", seed: int = 42) -> 
 
 def build_datasets(df: pd.DataFrame, cfg: Config):
     """
-    Divide en train/test estratificado, opcionalmente balancea SOLO el train,
-    crea tf.data Datasets y una capa TextVectorization adaptada sobre train.
+    Create train/test splits, optionally upsample ONLY the training split,
+    build tf.data datasets, and adapt a TextVectorization layer on training text.
 
-    Devuelve:
-      X_test (np.ndarray[str]), y_test (np.ndarray[int]),
-      train_ds (tf.data.Dataset), test_ds (tf.data.Dataset),
-      vectorizer (tf.keras.layers.TextVectorization), num_classes (int)
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataframe with columns 'text' (str) and 'target' (int).
+    cfg : Config
+        Configuration object; expects attributes:
+          - test_size, random_state
+          - no_balance (bool) to disable upsampling on train
+          - vocab_size, seq_len, batch_size
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, tf.data.Dataset, tf.data.Dataset,
+          tf.keras.layers.TextVectorization, int]
+        X_test, y_test, train_ds, test_ds, vectorizer, num_classes
     """
-    # Extrae arrays base
+    # Extract base arrays
     X = df["text"].values
     y = df["target"].values
 
+    # Stratified train/test split
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -173,7 +239,7 @@ def build_datasets(df: pd.DataFrame, cfg: Config):
         stratify=y,
     )
 
-    # Balanceo SOLO en train si no se desactiva
+    # Optional upsampling ONLY on the training data
     if not getattr(cfg, "no_balance", False):
         classes, counts = np.unique(y_train, return_counts=True)
         n_max = counts.max()
@@ -193,7 +259,7 @@ def build_datasets(df: pd.DataFrame, cfg: Config):
         X_train = np.concatenate(Xb)
         y_train = np.concatenate(yb)
 
-    # Vectorizer adaptado solo con X_train
+    # Text vectorizer adapted only on training text
     vectorizer = tf.keras.layers.TextVectorization(
         max_tokens=getattr(cfg, "vocab_size", 20000),
         output_sequence_length=getattr(cfg, "seq_len", 128),
@@ -202,7 +268,7 @@ def build_datasets(df: pd.DataFrame, cfg: Config):
     ds_xtrain = tf.data.Dataset.from_tensor_slices(X_train).batch(getattr(cfg, "batch_size", 32))
     vectorizer.adapt(ds_xtrain)
 
-    # tf.data Datasets
+    # Build tf.data datasets
     train_ds = (
         tf.data.Dataset.from_tensor_slices((X_train, y_train))
         .shuffle(getattr(cfg, "buffer_size", 10000), seed=getattr(cfg, "random_state", 42))
