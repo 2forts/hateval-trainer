@@ -96,21 +96,23 @@ def train_hybrid_eager(forward, trainables, X_test, y_test, train_ds, test_ds, c
 
 
 # === Stratified k-fold CV with per-fold reports (optionally saved) ===
-
 def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                    balance_train: bool = False):
     """
-    Stratified k-fold CV with two modes:
+    Stratified k-fold CV with three modes:
 
       - Classical mode (default): train and evaluate the GRU backbone only.
       - Hybrid mode (cfg.cv_use_hybrid=True): TWO-PHASE TRAINING PER FOLD
           Phase 1) train the classical backbone end-to-end.
           Phase 2) build the hybrid model (backbone is frozen) and train only the quantum+dense head.
+      - Dense ablation mode (cfg.cv_use_dense_ablation=True):
+          Same two-phase protocol as the hybrid, but replacing the VQC with a small
+          classical dense head (~75 parameters) to act as an ablation of the quantum layer.
 
     Also includes:
       - Per-fold class weights (scalable with cfg.cw_scale, default 1.0) — this is NOT resampling.
       - Optional per-fold decision-threshold tuning for binary tasks (cfg.tune_threshold).
-      - Optional saving of text reports and confusion matrices if cfg.cv_save_dir is set.
+      - Optional saving of per-fold reports and confusion matrices if cfg.cv_save_dir is set.
       - Standard callbacks: EarlyStopping + ReduceLROnPlateau.
     """
     import numpy as np
@@ -132,9 +134,17 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
     save_dir = getattr(cfg, "cv_save_dir", None)
     if save_dir is not None:
         save_dir = Path(save_dir); save_dir.mkdir(parents=True, exist_ok=True)
+
     cw_scale = float(getattr(cfg, "cw_scale", 1.0))
     tune_threshold = bool(getattr(cfg, "tune_threshold", False))
     use_hybrid = bool(getattr(cfg, "cv_use_hybrid", False))
+    use_dense_ablation = bool(getattr(cfg, "cv_use_dense_ablation", False))
+
+    # Si por accidente se activan ambos, damos prioridad al híbrido y avisamos
+    if use_hybrid and use_dense_ablation:
+        print("[WARN] Both cv_use_hybrid and cv_use_dense_ablation are True; "
+              "giving priority to the hybrid (quantum) head.", flush=True)
+        use_dense_ablation = False
 
     X = df["text"].values
     y = df["target"].values
@@ -181,7 +191,8 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         vectorizer.adapt(ds_xtr)
 
         train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
-                    .shuffle(getattr(cfg, "buffer_size", 10000), seed=getattr(cfg, "random_state", 42)+fold)
+                    .shuffle(getattr(cfg, "buffer_size", 10000),
+                             seed=getattr(cfg, "random_state", 42)+fold)
                     .batch(getattr(cfg, "batch_size", 32))
                     .prefetch(tf.data.AUTOTUNE))
         val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
@@ -200,9 +211,10 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         class_weights = {int(c): float(w) for c, w in zip(classes, scaled_cw)}
         # ================================================================================
 
-        # ===== Build and train backbone and (optionally) hybrid in two phases =====
+        # ===== Build and train backbone and (optionally) hybrid/ablation head in two phases =====
         if model_builder_factory is None:
-            from .models import build_gru_model, build_hybrid_model
+            from .models import build_gru_model, build_hybrid_model, build_dense_ablation_model
+
             # Phase 1: classical backbone
             classic = build_gru_model(
                 vectorizer=vectorizer,
@@ -217,10 +229,12 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                 tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2),
             ]
 
-            if use_hybrid:
+            if use_hybrid or use_dense_ablation:
                 # --- Train backbone (phase 1) ---
                 if getattr(cfg, "verbose", False):
-                    print(f"[CV fold {fold}/{k}] Phase 1: training classical backbone ...")
+                    mode = "hybrid" if use_hybrid else "dense_ablation"
+                    print(f"[CV fold {fold}/{k}] Phase 1: training classical backbone for {mode} ...",
+                          flush=True)
                 classic.fit(
                     train_ds,
                     epochs=getattr(cfg, "epochs", 5),
@@ -230,16 +244,22 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                     class_weight=class_weights,
                 )
 
-                # Build the hybrid model by freezing the extractor (handled inside build_hybrid_model)
-                hybrid = build_hybrid_model(classic, num_classes)
+                # --- Build the second-stage head ---
+                if use_hybrid:
+                    # Hybrid quantum head
+                    head_model = build_hybrid_model(classic, num_classes)
+                else:
+                    # Classical dense ablation head
+                    head_model = build_dense_ablation_model(classic, num_classes)
 
-                # --- Train hybrid head (phase 2) ---
-                # Respect hybrid-specific epochs if provided
+                # --- Train second-stage head (phase 2) ---
                 epochs_backup = getattr(cfg, "epochs", 5)
                 hy_epochs = getattr(cfg, "hybrid_epochs", epochs_backup)
                 if getattr(cfg, "verbose", False):
-                    print(f"[CV fold {fold}/{k}] Phase 2: training hybrid head ... (epochs={hy_epochs})")
-                hybrid.fit(
+                    mode = "hybrid" if use_hybrid else "dense_ablation"
+                    print(f"[CV fold {fold}/{k}] Phase 2: training {mode} head ... (epochs={hy_epochs})",
+                          flush=True)
+                head_model.fit(
                     train_ds,
                     epochs=hy_epochs,
                     validation_data=val_ds,
@@ -247,11 +267,12 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
                     verbose=1 if getattr(cfg, "verbose", False) else 0,
                     class_weight=class_weights,
                 )
-                model = hybrid  # evaluate with the hybrid
+                model = head_model  # evaluate with the hybrid or ablation head
             else:
                 # Backbone-only (classical mode)
                 if getattr(cfg, "verbose", False):
-                    print(f"[CV fold {fold}/{k}] Training classical backbone (no hybrid) ...")
+                    print(f"[CV fold {fold}/{k}] Training classical backbone (no hybrid, no ablation) ...",
+                          flush=True)
                 classic.fit(
                     train_ds,
                     epochs=getattr(cfg, "epochs", 5),
@@ -264,6 +285,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         else:
             # If an external factory is provided, we assume it encapsulates the two-phase logic if needed
             model = model_builder_factory(vectorizer, num_classes)()
+
         # ===========================================================================
 
         # --- Inference on validation ---
@@ -303,14 +325,16 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         )
 
         if getattr(cfg, "verbose", False):
-            print(f"\n[CV fold {fold}/{k}] (hybrid={use_hybrid}, cw_scale={cw_scale}, tune_thr={tune_threshold})")
+            mode = "hybrid" if use_hybrid else ("dense_ablation" if use_dense_ablation else "classic")
+            print(f"\n[CV fold {fold}/{k}] (mode={mode}, cw_scale={cw_scale}, tune_thr={tune_threshold})",
+                  flush=True)
             print(rep)
             print(f"Accuracy={acc:.4f} Macro-F1={macro_f1:.4f}")
 
         if save_dir is not None:
             (save_dir / f"fold_{fold:02d}_report.txt").write_text(rep)
             cm = confusion_matrix(y_val, y_pred)
-            fig = _cm_figure(cm, label_names)  # ensure this utility exists in train.py
+            fig = _cm_figure(cm, label_names)
             fig.savefig(save_dir / f"fold_{fold:02d}_cm.png", dpi=150, bbox_inches="tight")
             import matplotlib.pyplot as plt; plt.close(fig)
 
@@ -337,6 +361,7 @@ def cross_validate(df, cfg, k=5, label_names=None, model_builder_factory=None,
         "cv_macro_f1_mean": mean_f1,
         "cv_macro_f1_std": std_f1,
     }
+
 
 def _cm_figure(cm: np.ndarray, labels: list | None):
     """Return a matplotlib Figure with the confusion matrix annotated."""

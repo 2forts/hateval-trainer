@@ -119,3 +119,51 @@ def build_hybrid_model(base_model: tf.keras.Model, num_classes: int) -> tf.keras
         metrics=["accuracy"],
     )
     return model_h
+
+def build_dense_ablation_model(base_model: tf.keras.Model, num_classes: int) -> tf.keras.Model:
+    """
+    Classical ablation head that mirrors the hybrid architecture but
+    replaces the VQC with a small dense layer of comparable parameter
+    budget (~75 trainable parameters in the classifier head).
+
+    Protocol
+    --------
+    - Freeze the classical extractor up to the penultimate feature layer
+      (same as in build_hybrid_model).
+    - Project the 64-dimensional feature vector to 5 dimensions (to match
+      the qubit count used in the hybrid model).
+    - Apply a small dense layer (10 units) on top of this 5D vector,
+      with tanh activation, so that the number of parameters in this
+      classical block is of the same order as the VQC.
+    - Continue with the same 32-unit dense layer and final logits layer
+      as in the hybrid model.
+    """
+    # Reuse the same feature extractor used in the hybrid model
+    extractor = tf.keras.Model(inputs=base_model.input, outputs=base_model.layers[-2].output)
+    for l in extractor.layers:
+        l.trainable = False
+
+    n_qubits = 5  # keep the same dimensionality as the quantum head
+
+    inp = extractor.input
+    x = extractor.output                      # shape: (batch, 64)
+
+    # Projection to 5 dimensions (same as in the hybrid model)
+    x = Dense(n_qubits, name="proj_to_5")(x)
+    x = Lambda(lambda t: tf.math.tanh(t), name="proj_tanh")(x)
+
+    # Small dense block with similar parameter budget to the VQC
+    # 5 -> 10 units: 5*10 + 10 = 60 params (same order of magnitude as the VQC weights)
+    x = Dense(10, activation="tanh", name="dense_ablation")(x)
+
+    # Same 32-unit dense layer and logits as in the hybrid model
+    x = Dense(32, activation="relu", name="dense_head_32")(x)
+    out = Dense(num_classes, name="logits")(x)
+
+    model_dense = tf.keras.Model(inputs=inp, outputs=out, name="dense_ablation_head")
+    model_dense.compile(
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+        metrics=["accuracy"],
+    )
+    return model_dense

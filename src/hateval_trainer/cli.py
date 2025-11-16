@@ -73,12 +73,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--cv-save", action="store_true", help="Save per-fold reports and confusion matrices during cross-validation")
     p.add_argument("--cv-dir", type=Path, default=Path("outputs/cv"), help="Directory to save cross-validation artifacts")
     p.add_argument("--cv-use-hybrid", action="store_true", help="Use the hybrid (quantum) head inside cross-validation (slower)")
-    p.add_argument("--tune-threshold", action="store_true",
-                   help="Tune decision threshold per CV fold to maximize macro-F1 (binary only)")
-    p.add_argument("--cw-scale", type=float, default=1.0,
-                   help="Scale factor for minority class weight in CV (1.0 keeps sklearn 'balanced')")
+    p.add_argument("--cv-use-dense-ablation", action="store_true", help="Use the classical dense head (ablation) instead of VQC inside CV")
+    p.add_argument("--tune-threshold", action="store_true", help="Tune decision threshold per CV fold to maximize macro-F1 (binary only)")
+    p.add_argument("--cw-scale", type=float, default=1.0, help="Scale factor for minority class weight in CV (1.0 keeps sklearn 'balanced')")
+    
     return p
-
 
 def main(argv=None):
     try:
@@ -104,6 +103,7 @@ def main(argv=None):
         if args.cv_save:
             setattr(cfg, "cv_save_dir", args.cv_dir)
         setattr(cfg, "cv_use_hybrid", bool(args.cv_use_hybrid))
+        setattr(cfg, "cv_use_dense_ablation", bool(args.cv_use_dense_ablation))
         setattr(cfg, "tune_threshold", bool(args.tune_threshold))
         setattr(cfg, "cw_scale", float(args.cw_scale))
 

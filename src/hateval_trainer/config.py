@@ -19,3 +19,5 @@ class Config:
   use_hybrid: bool = False
   hybrid_epochs: int | None = None
   plots_dir: Path = Path("outputs")
+  cv_use_hybrid: bool = False
+  cv_use_dense_ablation: bool = False
